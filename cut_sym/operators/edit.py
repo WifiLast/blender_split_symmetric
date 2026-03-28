@@ -1,0 +1,524 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2013-2022 Campbell Barton
+# SPDX-FileCopyrightText: 2016-2026 Mikhail Rachinskiy
+# SPDX-FileCopyrightText: 2022 Align XY by Jaggz H.
+# SPDX-FileCopyrightText: 2024-2025 Hollow, Bisect by Ubiratan Freitas
+
+import math
+
+import bpy
+import bmesh
+from bpy.app.translations import pgettext_tip as tip_
+from bpy.props import BoolProperty, EnumProperty, FloatProperty, IntProperty
+from bpy.types import Object, Operator
+from mathutils import Vector
+
+
+class MESH_OT_bisect(Operator):
+    bl_idname = "mesh.cut_sym_bisect"
+    bl_label = "Split Model"
+    bl_description = "Split the active mesh symmetrically in the middle into two separate objects"
+    bl_options = {"REGISTER", "UNDO"}
+
+    axis: bpy.props.EnumProperty(
+        name="Axis",
+        description="Axis along which to cut the model",
+        items=(
+            ("X", "X", "Cut along the X axis (left / right)"),
+            ("Y", "Y", "Cut along the Y axis (front / back)"),
+            ("Z", "Z", "Cut along the Z axis (top / bottom)"),
+        ),
+        default="X",
+    )
+    use_origin: bpy.props.BoolProperty(
+        name="Cut at Origin",
+        description="Cut at the world origin (0,0,0) instead of the bounding-box centre. "
+                    "Use this for models that are already centred at the origin",
+        default=False,
+    )
+    fill_cap: bpy.props.BoolProperty(
+        name="Fill Cut",
+        description="Fill / cap the open cut face so each half is a closed solid",
+        default=True,
+    )
+
+    def draw(self, context):
+        layout = self.layout
+        layout.use_property_split = True
+        layout.use_property_decorate = False
+        layout.separator()
+        layout.prop(self, "axis", expand=True)
+        layout.prop(self, "use_origin")
+        layout.prop(self, "fill_cap")
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        return obj is not None and obj.type == "MESH"
+
+    def execute(self, context):
+        obj = context.active_object
+        if obj is None or obj.type != "MESH":
+            self.report({"ERROR"}, "Select one mesh object to split")
+            return {"CANCELLED"}
+
+        if len(context.selected_objects) > 1:
+            self.report({"WARNING"}, "Multiple selected objects. Only the active one will be split")
+
+        if context.mode == "EDIT_MESH":
+            bpy.ops.object.mode_set(mode="OBJECT")
+
+        axis_index = "XYZ".index(self.axis)
+        axis_label = self.axis.lower()
+
+        base_name = obj.name
+        # Strip existing suffixes to avoid accumulation on redo
+        for suffix in ("_left", "_right",
+                       "_x_negative", "_x_positive",
+                       "_y_negative", "_y_positive",
+                       "_z_negative", "_z_positive"):
+            if base_name.endswith(suffix):
+                base_name = base_name[: -len(suffix)]
+                break
+
+        duplicate = self._duplicate_object(context, obj)
+        duplicate.name = f"{base_name}_{axis_label}_positive"
+        obj.name = f"{base_name}_{axis_label}_negative"
+
+        self._keep_half(obj, axis_index, keep_positive=False,
+                        use_origin=self.use_origin, fill_cap=self.fill_cap)
+        self._keep_half(duplicate, axis_index, keep_positive=True,
+                        use_origin=self.use_origin, fill_cap=self.fill_cap)
+
+        bpy.ops.object.select_all(action="DESELECT")
+        obj.select_set(True)
+        duplicate.select_set(True)
+        context.view_layer.objects.active = duplicate
+
+        return {"FINISHED"}
+
+    def invoke(self, context, event):
+        if context.object is None or not context.object.select_get():
+            return {"CANCELLED"}
+
+        return self.execute(context)
+
+    @staticmethod
+    def _duplicate_object(context, obj):
+        duplicate = obj.copy()
+        duplicate.data = obj.data.copy()
+
+        collections = obj.users_collection or (context.collection,)
+        for collection in collections:
+            collection.objects.link(duplicate)
+
+        duplicate.matrix_world = obj.matrix_world.copy()
+        return duplicate
+
+    @staticmethod
+    def _keep_half(obj, axis_index, keep_positive, use_origin=True, fill_cap=True):
+        mesh = obj.data
+        bm = bmesh.new()
+        bm.from_mesh(mesh)
+
+        if use_origin:
+            # Cut at the world origin transformed into local object space.
+            # For a model centred at the origin with no location offset this is (0,0,0).
+            local_origin = obj.matrix_world.inverted() @ Vector((0.0, 0.0, 0.0))
+            plane_co = local_origin
+        else:
+            # Bounding-box centre (original behaviour).
+            plane_co = sum((Vector(corner) for corner in obj.bound_box), Vector()) / 8.0
+
+        plane_no = Vector((0.0, 0.0, 0.0))
+        plane_no[axis_index] = 1.0
+
+        result = bmesh.ops.bisect_plane(
+            bm,
+            geom=[*bm.verts, *bm.edges, *bm.faces],
+            plane_co=plane_co,
+            plane_no=plane_no,
+            clear_inner=False,
+            clear_outer=False,
+        )
+
+        epsilon = 1e-6
+        if keep_positive:
+            verts_to_delete = [v for v in bm.verts if v.co[axis_index] < plane_co[axis_index] - epsilon]
+        else:
+            verts_to_delete = [v for v in bm.verts if v.co[axis_index] > plane_co[axis_index] + epsilon]
+
+        if verts_to_delete:
+            bmesh.ops.delete(bm, geom=verts_to_delete, context="VERTS")
+
+        # Fill the open boundary created by the cut.
+        if fill_cap:
+            # After deletion, cut edges have exactly one linked face → is_boundary is True.
+            boundary_edges = [e for e in bm.edges if e.is_boundary]
+            if boundary_edges:
+                bmesh.ops.holes_fill(bm, edges=boundary_edges, sides=0)
+
+        bm.normal_update()
+        bm.to_mesh(mesh)
+        bm.free()
+        mesh.update()
+
+
+class MESH_OT_hollow(Operator):
+    bl_idname = "mesh.cut_sym_hollow"
+    bl_label = "Hollow"
+    bl_description = "Create offset surface"
+    bl_options = {"REGISTER", "UNDO", "PRESET"}
+
+    offset_direction: EnumProperty(
+        name="Offset Direction",
+        description="Offset direction relative to the object surface",
+        items=(
+            ("INSIDE", "Inside", ""),
+            ("OUTSIDE", "Outside", ""),
+        ),
+        default="INSIDE",
+    )
+    offset: FloatProperty(
+        name="Offset",
+        description="Surface offset in relation to original mesh",
+        subtype="DISTANCE",
+        min=0.0,
+        step=1,
+        default=1.0,
+    )
+    voxel_size: FloatProperty(
+        name="Voxel Size",
+        description="Size of the voxel used for volume evaluation. Lower values preserve finer details",
+        subtype="DISTANCE",
+        min=0.0001,
+        step=1,
+        default=1.0,
+    )
+    make_hollow_duplicate: BoolProperty(
+        name="Hollow Duplicate",
+        description="Create hollowed out copy of the object",
+    )
+    offset_surface_only: BoolProperty(
+        name="Offset Surface Only",
+        description="Remove original and keep offset surface",
+    )
+
+    def draw(self, context):
+        layout = self.layout
+        layout.use_property_split = True
+        layout.use_property_decorate = False
+
+        layout.separator()
+
+        layout.prop(self, "offset_direction", expand=True)
+        layout.prop(self, "offset")
+        layout.prop(self, "voxel_size")
+        if bpy.app.version >= (5, 0, 0):
+            layout.prop(self, "offset_surface_only")
+        else:
+            layout.prop(self, "make_hollow_duplicate")
+
+    def execute(self, context):
+        if not self.offset:
+            return {"FINISHED"}
+
+        if bpy.app.version >= (5, 0, 0):
+            self.hollow_gn(context)
+        else:
+            self.hollow_openvdb(context)
+
+        return {"FINISHED"}
+
+    def invoke(self, context, event):
+        if context.object is None or not context.object.select_get():
+            return {"CANCELLED"}
+
+        if context.mode == "EDIT_MESH":
+            bpy.ops.object.mode_set(mode="OBJECT")
+
+        wm = context.window_manager
+        return wm.invoke_props_dialog(self)
+
+    def hollow_gn(self, context):
+        from .. import lib
+
+        md = lib.gn_setup("Hollow", context.object)
+        md["Socket_5"] = ["INSIDE", "OUTSIDE"].index(self.offset_direction)
+        md["Socket_3"] = self.offset
+        md["Socket_2"] = self.voxel_size
+        md["Socket_4"] = self.offset_surface_only
+
+        context.view_layer.update()
+        if md.node_warnings:
+            md.id_data.modifiers.remove(md)
+            self.report({"ERROR"}, "Make sure target mesh has closed surface and offset value is less than half of target thickness")
+
+    def hollow_openvdb(self, context):
+        import numpy as np
+
+        if bpy.app.version >= (4, 4, 0):
+            import openvdb as vdb
+        else:
+            import pyopenvdb as vdb
+
+        obj = context.object
+        depsgraph = context.evaluated_depsgraph_get()
+        mesh_target = bpy.data.meshes.new_from_object(obj.evaluated_get(depsgraph))
+
+        # Apply transforms, avoid translating the mesh
+        mat = obj.matrix_world.copy()
+        mat.translation.zero()
+        mesh_target.transform(mat)
+
+        # Read mesh to numpy arrays
+        nverts = len(mesh_target.vertices)
+        ntris = len(mesh_target.loop_triangles)
+        verts = np.zeros(3 * nverts, dtype=np.float32)
+        tris = np.zeros(3 * ntris, dtype=np.int32)
+        mesh_target.vertices.foreach_get("co", verts)
+        verts.shape = (-1, 3)
+        mesh_target.loop_triangles.foreach_get("vertices", tris)
+        tris.shape = (-1, 3)
+
+        # Generate VDB levelset
+        half_width = max(3.0, math.ceil(self.offset / self.voxel_size) + 2.0) # half_width has to envelop offset
+        trans = vdb.createLinearTransform(self.voxel_size)
+        levelset = vdb.FloatGrid.createLevelSetFromPolygons(verts, triangles=tris, transform=trans, halfWidth=half_width)
+
+        # Generate offset surface
+        if self.offset_direction == "INSIDE":
+            newverts, newquads = levelset.convertToQuads(-self.offset)
+            if newquads.size == 0:
+                self.report({"ERROR"}, "Make sure target mesh has closed surface and offset value is less than half of target thickness")
+                return
+        else:
+            newverts, newquads = levelset.convertToQuads(self.offset)
+
+        bpy.ops.object.select_all(action="DESELECT")
+        mesh_offset = bpy.data.meshes.new(mesh_target.name + " offset")
+        mesh_offset.from_pydata(newverts, [], list(newquads))
+
+        # For some reason OpenVDB has inverted normals
+        mesh_offset.flip_normals()
+        obj_offset = bpy.data.objects.new(obj.name + " offset", mesh_offset)
+        obj_offset.matrix_world.translation = obj.matrix_world.translation
+        bpy.context.collection.objects.link(obj_offset)
+        obj_offset.select_set(True)
+        context.view_layer.objects.active = obj_offset
+
+        if self.make_hollow_duplicate:
+            obj_hollow = bpy.data.objects.new(obj.name + " hollow", mesh_target)
+            bpy.context.collection.objects.link(obj_hollow)
+            obj_hollow.matrix_world.translation = obj.matrix_world.translation
+            obj_hollow.select_set(True)
+            if self.offset_direction == "INSIDE":
+                mesh_offset.flip_normals()
+            else:
+                mesh_target.flip_normals()
+            context.view_layer.objects.active = obj_hollow
+            bpy.ops.object.join()
+        else:
+            bpy.data.meshes.remove(mesh_target)
+
+
+class OBJECT_OT_align_xy(Operator):
+    bl_idname = "object.cut_sym_align_xy"
+    bl_label = "Align XY"
+    bl_description = "Rotate object so the selected faces lie, on average, parallel to the XY plane"
+    bl_options = {"REGISTER", "UNDO"}
+
+    use_face_area: BoolProperty(
+        name="Weight by Face Area",
+        description="Take face area into account when calculating rotation",
+        default=True,
+    )
+
+    def execute(self, context):
+        # FIXME: Undo is inconsistent.
+        # FIXME: Would be nicer if rotate could pick some object-local axis.
+        import bmesh
+        from mathutils import Vector
+
+        is_edit_mesh = context.mode == "EDIT_MESH"
+        skip_invalid = []
+
+        for obj in (ob for ob in context.selected_objects if ob.type == "MESH"):
+            orig_loc = obj.location.copy()
+            orig_scale = obj.scale.copy()
+
+            # When in edit mode, do as the edit mode does.
+            if is_edit_mesh:
+                bm = bmesh.from_edit_mesh(obj.data)
+                faces = [f for f in bm.faces if f.select]
+            else:
+                faces = [p for p in obj.data.polygons if p.select]
+
+            if not faces:
+                skip_invalid.append(obj.name)
+                continue
+
+            # Rotate object so average normal of selected faces points down.
+            normal = Vector((0.0, 0.0, 0.0))
+            if self.use_face_area:
+                for face in faces:
+                    if is_edit_mesh:
+                        normal += (face.normal * face.calc_area())
+                    else:
+                        normal += (face.normal * face.area)
+            else:
+                for face in faces:
+                    normal += face.normal
+            normal = normal.normalized()
+            normal.rotate(obj.matrix_world)  # local -> world.
+            offset = normal.rotation_difference(Vector((0.0, 0.0, -1.0)))
+            offset = offset.to_matrix().to_4x4()
+            obj.matrix_world = offset @ obj.matrix_world
+            obj.scale = orig_scale
+            obj.location = orig_loc
+
+        if skip_invalid:
+            if len(skip_invalid) == 1:
+                self.report({"WARNING"}, tip_("Skipping object {}. No faces selected").format(skip_invalid[0]))
+            else:
+                self.report({"WARNING"}, "Skipping some objects. No faces selected. See terminal")
+
+                for name in skip_invalid:
+                    print(tip_("Align to XY: Skipping object {}. No faces selected").format(name))
+
+        return {"FINISHED"}
+
+    def invoke(self, context, event):
+        if not [ob for ob in context.selected_objects if ob.type == "MESH"]:
+            self.report({"ERROR"}, "At least one mesh object must be selected")
+            return {"CANCELLED"}
+
+        return self.execute(context)
+
+
+def _scale(scale: float, report=None, report_suffix="") -> None:
+    from .. import lib
+
+    if scale != 1.0:
+        bpy.ops.transform.resize(value=(scale,) * 3)
+
+    if report is not None:
+        scale_fmt = lib.clean_float(scale, 6)
+        report({"INFO"}, tip_("Scaled by {}").format(scale_fmt) + report_suffix)
+
+
+class MESH_OT_scale_to_volume(Operator):
+    bl_idname = "mesh.cut_sym_scale_to_volume"
+    bl_label = "Scale to Volume"
+    bl_description = "Scale edit-mesh or selected-objects to a set volume"
+    bl_options = {"REGISTER", "UNDO"}
+
+    volume_init: FloatProperty(
+        options={"HIDDEN"},
+    )
+    volume: FloatProperty(
+        name="Volume",
+        unit="VOLUME",
+        min=0.0,
+        max=100000.0,
+        step=1,
+    )
+
+    def execute(self, context):
+        from .. import lib
+        scale = math.pow(self.volume, 1 / 3) / math.pow(self.volume_init, 1 / 3)
+        scale_fmt = lib.clean_float(scale, 6)
+        self.report({"INFO"}, tip_("Scaled by {}").format(scale_fmt))
+        _scale(scale, self.report)
+        return {"FINISHED"}
+
+    def invoke(self, context, event):
+
+        def calc_volume(obj: Object) -> float:
+            from .. import lib
+            bm = lib.bmesh_copy_from_object(obj, apply_modifiers=True)
+            volume = bm.calc_volume(signed=True)
+            bm.free()
+            return volume
+
+        if not context.selected_objects:
+            self.report({"ERROR"}, "At least one mesh object must be selected")
+            return {"CANCELLED"}
+
+        if context.mode == "EDIT_MESH":
+            volume = calc_volume(context.edit_object)
+        else:
+            volume = sum(
+                calc_volume(obj)
+                for obj in context.selected_editable_objects
+                if obj.type in {"MESH", "CURVE", "SURFACE", "FONT", "META"}
+            )
+
+        if volume == 0.0:
+            self.report({"WARNING"}, "Object has zero volume")
+            return {"CANCELLED"}
+
+        self.volume_init = self.volume = abs(volume)
+
+        wm = context.window_manager
+        return wm.invoke_props_dialog(self)
+
+
+class MESH_OT_scale_to_bounds(Operator):
+    bl_idname = "mesh.cut_sym_scale_to_bounds"
+    bl_label = "Scale to Bounds"
+    bl_description = "Scale edit-mesh or selected-objects to fit within a maximum length"
+    bl_options = {"REGISTER", "UNDO"}
+
+    length_init: FloatProperty(
+        options={"HIDDEN"},
+    )
+    axis_init: IntProperty(
+        options={"HIDDEN"},
+    )
+    length: FloatProperty(
+        name="Length",
+        unit="LENGTH",
+        min=0.0,
+        max=100000.0,
+        step=1,
+    )
+
+    def execute(self, context):
+        scale = self.length / self.length_init
+        axis = "XYZ"[self.axis_init]
+        _scale(scale, report=self.report, report_suffix=tip_(", Clamping {}-Axis").format(axis))
+        return {"FINISHED"}
+
+    def invoke(self, context, event):
+        from mathutils import Vector
+
+        def calc_length(vecs: list[Vector]) -> tuple[float, int]:
+            return max(
+                ((max(v[i] for v in vecs) - min(v[i] for v in vecs)), i)
+                for i in range(3)
+            )
+
+        if not context.selected_objects:
+            self.report({"ERROR"}, "At least one mesh object must be selected")
+            return {"CANCELLED"}
+
+        if context.mode == "EDIT_MESH":
+            obj = context.edit_object
+            length, axis = calc_length([Vector(v) @ obj.matrix_world for v in obj.bound_box])
+        else:
+            length, axis = calc_length([
+                Vector(v) @ obj.matrix_world
+                for obj in context.selected_editable_objects
+                for v in obj.bound_box
+            ])
+
+        if length == 0.0:
+            self.report({"WARNING"}, "Object has zero bounds")
+            return {"CANCELLED"}
+
+        self.length_init = self.length = length
+        self.axis_init = axis
+
+        wm = context.window_manager
+        return wm.invoke_props_dialog(self)

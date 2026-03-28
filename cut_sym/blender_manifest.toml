@@ -1,0 +1,20 @@
+schema_version = "1.0.0"
+id = "cut_sym"
+name = "Cut Sym"
+version = "1.3.3"
+tagline = "Symmetrically cut mesh objects into two halves"
+maintainer = "Mikhail Rachinskiy"
+type = "add-on"
+tags = ["Mesh"]
+blender_version_min = "4.2.0"
+license = ["SPDX:GPL-3.0-or-later"]
+website = "https://github.com/wiffzack/cut_sym"
+copyright = [
+    "2013-2024 Campbell Barton",
+    "2016-2026 Mikhail Rachinskiy",
+    "2022 Jaggz H.",
+    "2024-2025 Ubiratan Freitas",
+]
+
+[permissions]
+files = "Export STL, PLY, OBJ files"
