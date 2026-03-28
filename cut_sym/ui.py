@@ -25,8 +25,10 @@ class VIEW3D_MT_cut_sym(Menu):
 
     def draw(self, context):
         layout = self.layout
+        props = context.scene.cut_sym
         layout.operator_context = "INVOKE_DEFAULT"
         layout.operator("mesh.cut_sym_bisect")
+        layout.prop(props, "fill_cap")
         layout.operator("mesh.cut_sym_hollow")
         layout.operator("object.cut_sym_align_xy")
         layout.operator("mesh.cut_sym_scale_to_volume")
@@ -53,9 +55,11 @@ class VIEW3D_PT_cut_sym_edit(Sidebar, Panel):
     def draw(self, context):
         layout = self.layout
         layout.enabled = context.object is not None
+        props = context.scene.cut_sym
 
         col = layout.column(align=True)
         col.operator("mesh.cut_sym_bisect")
+        col.prop(props, "fill_cap")
         col.operator("mesh.cut_sym_hollow")
         sub = col.row(align=True)
         sub.enabled = _is_mesh(context.object)

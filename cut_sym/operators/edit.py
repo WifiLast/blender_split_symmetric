@@ -36,12 +36,6 @@ class MESH_OT_bisect(Operator):
                     "Use this for models that are already centred at the origin",
         default=False,
     )
-    fill_cap: bpy.props.BoolProperty(
-        name="Fill Cut",
-        description="Fill / cap the open cut face so each half is a closed solid",
-        default=True,
-    )
-
     def draw(self, context):
         layout = self.layout
         layout.use_property_split = True
@@ -49,7 +43,6 @@ class MESH_OT_bisect(Operator):
         layout.separator()
         layout.prop(self, "axis", expand=True)
         layout.prop(self, "use_origin")
-        layout.prop(self, "fill_cap")
 
     @classmethod
     def poll(cls, context):
@@ -68,6 +61,7 @@ class MESH_OT_bisect(Operator):
         if context.mode == "EDIT_MESH":
             bpy.ops.object.mode_set(mode="OBJECT")
 
+        fill_cap = context.scene.cut_sym.fill_cap
         axis_index = "XYZ".index(self.axis)
         axis_label = self.axis.lower()
 
@@ -86,9 +80,9 @@ class MESH_OT_bisect(Operator):
         obj.name = f"{base_name}_{axis_label}_negative"
 
         self._keep_half(obj, axis_index, keep_positive=False,
-                        use_origin=self.use_origin, fill_cap=self.fill_cap)
+                        use_origin=self.use_origin, fill_cap=fill_cap)
         self._keep_half(duplicate, axis_index, keep_positive=True,
-                        use_origin=self.use_origin, fill_cap=self.fill_cap)
+                        use_origin=self.use_origin, fill_cap=fill_cap)
 
         bpy.ops.object.select_all(action="DESELECT")
         obj.select_set(True)
