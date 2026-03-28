@@ -27,8 +27,10 @@ class VIEW3D_MT_cut_sym(Menu):
         layout = self.layout
         props = context.scene.cut_sym
         layout.operator_context = "INVOKE_DEFAULT"
-        layout.operator("mesh.cut_sym_bisect")
+        op = layout.operator("mesh.cut_sym_bisect")
+        op.axis = props.cut_axis
         layout.prop(props, "fill_cap")
+        layout.prop(props, "cut_axis", expand=True)
         layout.operator("mesh.cut_sym_hollow")
         layout.operator("object.cut_sym_align_xy")
         layout.operator("mesh.cut_sym_scale_to_volume")
@@ -58,8 +60,10 @@ class VIEW3D_PT_cut_sym_edit(Sidebar, Panel):
         props = context.scene.cut_sym
 
         col = layout.column(align=True)
-        col.operator("mesh.cut_sym_bisect")
+        op = col.operator("mesh.cut_sym_bisect")
+        op.axis = props.cut_axis
         col.prop(props, "fill_cap")
+        col.prop(props, "cut_axis", expand=True)
         col.operator("mesh.cut_sym_hollow")
         sub = col.row(align=True)
         sub.enabled = _is_mesh(context.object)

@@ -95,6 +95,7 @@ class MESH_OT_bisect(Operator):
         if context.object is None or not context.object.select_get():
             return {"CANCELLED"}
 
+        self.axis = context.scene.cut_sym.cut_axis
         return self.execute(context)
 
     @staticmethod
