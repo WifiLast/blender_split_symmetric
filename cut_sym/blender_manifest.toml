@@ -12,6 +12,3 @@ website = "https://github.com/WifiLast/blender_split_symmetric"
 copyright = [
     "2026 Martin St.",
 ]
-
-[permissions]
-files = "Export STL, PLY, OBJ files"
