@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 id = "cut_sym"
 name = "Cut Sym"
-version = "0.0.2"
+version = "0.0.3"
 tagline = "Symmetrically cut mesh objects into two halves"
 maintainer = "Wiffzackius"
 type = "add-on"
