@@ -52,3 +52,4 @@ class VIEW3D_PT_cut_sym_edit(Sidebar, Panel):
         op.axis = props.cut_axis
         col.prop(props, "fill_cap")
         col.prop(props, "cut_axis", expand=True)
+        col.label(text="Arrow keys: nudge cut  |  Enter: confirm")
